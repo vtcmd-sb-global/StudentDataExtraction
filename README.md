@@ -1,6 +1,4 @@
-============================================================
-  DATA EXTRACTION – USER GUIDE (GUI Version)
-============================================================
+DATA EXTRACTION – USER GUIDE (GUI Version)
 
 FOLDER STRUCTURE
 ----------------
