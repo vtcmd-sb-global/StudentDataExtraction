@@ -1,0 +1,15 @@
+Data Extraction Log – 2026-08-31T17:17:14.348535
+============================================================
+Source file One used     : 1
+  - BookingConfirmationRegisterReport.xlsx
+Source file Two used    : 1
+  - StudentPersonalDetailReport.xlsx
+Total source file one records  : 5107
+Total source file two records : 4275
+Rows written           : 5107
+Matched with personal  : 5055
+Unmatched (booking only): 52
+Output file            : Client_Data_Collection_20260831_171712.xlsx
+
+NOTE: Duplicate checking is DISABLED.
+      Every booking row is written even if names repeat.
