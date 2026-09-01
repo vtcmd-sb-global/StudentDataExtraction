@@ -1,4 +1,4 @@
-DATA EXTRACTION – USER GUIDE (GUI Version)
+STUDENT DATA EXTRACTION – USER GUIDE (GUI Version)
 
 FOLDER STRUCTURE
 ----------------
@@ -15,8 +15,8 @@ DataExtraction/
 ├── destination/          ← Generated result files appear here
 │   └── Client_Data_Collection_YYYYMMDD_HHMMSS.xlsx
 │
-├── consolidate_student_data.py   ← Main program (GUI + logic)
-├── Run_Consolidation.bat         ← Double-click to launch GUI
+├── data_extraction.py   ← Main program (GUI + logic)
+├── Run_Data_Extraction.bat         ← Double-click to launch GUI
 ├── requirements.txt
 └── matching_log.txt              (created after each run)
 
@@ -26,11 +26,11 @@ HOW TO USE (GUI)
 1. Place one or more Booking Confirmation report(s) into  source/
 2. Place one or more Student Personal Detail report(s) into  source/
 3. Place the Client Data Collection template into  template/
-4. Double-click  Run_Consolidation.bat   (or run: python consolidate_student_data.py)
+4. Double-click  Run_Data_Extraction.bat   (or run: python consolidate_student_data.py)
 5. The GUI window opens:
    - Click “Refresh” if you just added files
    - Check the detected Booking / Personal files lists
-   - Click “▶ Run Data Copy”
+   - Click “Run Data Extraction”
    - Watch the live log and progress bar
    - When finished, click “Open Output File” or open the destination folder
 6. The result appears in destination/ with a timestamp so nothing is overwritten
@@ -75,7 +75,8 @@ Rollnumber                          Booking → Enrollment No.
 Mobilenumber                        Personal → Mobile No.
 Studentaddress                      Personal → Address 1 + Address 2
 Class / Section / Guardiancnic /
-Tuition Fee / Previous Balance      left empty
+Tuition Fee                         Booking → Monthly Fee After Discount
+Previous Balance                    left empty
 
 
 REQUIREMENTS
