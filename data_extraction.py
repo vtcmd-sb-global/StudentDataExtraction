@@ -21,8 +21,12 @@ except ImportError:
     )
     sys.exit(1)
 
-import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, scrolledtext
+try:
+    import tkinter as tk
+    from tkinter import ttk, filedialog, messagebox, scrolledtext
+    HAS_TK = True
+except ImportError:
+    HAS_TK = False
 
 # ============================================================
 # PATHS
@@ -149,7 +153,7 @@ def list_xlsx(folder):
 
 
 def classify_source_files(paths):
-    booking, personal = [], []
+    booking, personal, active = [], [], []
     for path in paths:
         try:
             wb = load_workbook(path, data_only=True, read_only=True)
@@ -162,21 +166,30 @@ def classify_source_files(paths):
                         text += " " + str(v).lower()
             wb.close()
 
-            if "booking confirmation" in text or "enrollment no" in text:
+            name = os.path.basename(path).lower()
+            # Active Students file: has Batch + Enrollment and typically "active" in name/sheet
+            if ("active" in name or "active student" in text) and (
+                "batch" in text or ("enrollment" in text and "faculty" in text)
+            ):
+                active.append(path)
+            elif "booking confirmation" in text or (
+                "enrollment no" in text and "booking confirmation" in text
+            ):
                 booking.append(path)
             elif "student personal" in text or "birth date" in text or "guardian name" in text:
                 personal.append(path)
             else:
-                name = os.path.basename(path).lower()
                 if "booking" in name or "confirmation" in name:
                     booking.append(path)
+                elif "active" in name:
+                    active.append(path)
                 elif "personal" in name or "student" in name:
                     personal.append(path)
                 else:
                     personal.append(path)
         except Exception:
             personal.append(path)
-    return booking, personal
+    return booking, personal, active
 
 
 def load_source_one_file(path):
@@ -324,6 +337,97 @@ def find_best_personal_match(booking_rec, name_to_personal):
     )
 
 
+def normalize_enrollment(val):
+    """Normalize enrollment / student id for matching (case-insensitive, strip spaces)."""
+    if val is None or is_empty(val):
+        return ""
+    return str(val).strip().lower().replace(" ", "")
+
+
+def load_active_students_file(path):
+    """
+    Load Active Students list.
+    Returns list of dicts with enrollment_no, student_name_norm, batch, etc.
+    """
+    wb = load_workbook(path, data_only=True)
+    ws = wb.active
+
+    header_row = find_header_row(
+        ws, must_contain=["enrollment", "batch"], search_rows=20
+    )
+    if header_row is None:
+        header_row = find_header_row(
+            ws, must_contain=["enrollment", "student name"], search_rows=20
+        )
+    if header_row is None:
+        wb.close()
+        return []
+
+    headers = build_header_map(ws, header_row)
+
+    col_enroll = get_col(
+        headers, "Enrollment No", "Enrollment No.", "Enrollment Number", "Enroll No", "Student Id", "StudentID"
+    )
+    col_name = get_col(headers, "Student Name")
+    col_batch = get_col(headers, "Batch", "Batch Code", "BatchCode")
+    col_center = get_col(headers, "Center", "Centre", "Center Name")
+    col_faculty = get_col(headers, "Faculty")
+    col_phone = get_col(headers, "Phone", "Mobile", "Mobile No")
+
+    records = []
+    for row in range(header_row + 1, ws.max_row + 1):
+        enroll_raw = ws.cell(row, col_enroll).value if col_enroll else None
+        name_raw = ws.cell(row, col_name).value if col_name else None
+        if is_empty(enroll_raw) and is_empty(name_raw):
+            continue
+
+        batch_val = ""
+        if col_batch and not is_empty(ws.cell(row, col_batch).value):
+            batch_val = str(ws.cell(row, col_batch).value).strip()
+
+        records.append({
+            "enrollment_no": str(enroll_raw).strip() if enroll_raw else "",
+            "enrollment_norm": normalize_enrollment(enroll_raw),
+            "student_name_raw": str(name_raw).strip() if name_raw else "",
+            "student_name_norm": normalize_name(name_raw) if name_raw else "",
+            "batch": batch_val,
+            "center": str(ws.cell(row, col_center).value).strip()
+                if col_center and not is_empty(ws.cell(row, col_center).value) else "",
+            "faculty": str(ws.cell(row, col_faculty).value).strip()
+                if col_faculty and not is_empty(ws.cell(row, col_faculty).value) else "",
+            "phone": str(ws.cell(row, col_phone).value).strip()
+                if col_phone and not is_empty(ws.cell(row, col_phone).value) else "",
+            "source_file": os.path.basename(path),
+        })
+
+    wb.close()
+    return records
+
+
+def build_active_lookup(active_records):
+    """
+    Build lookup by normalized Enrollment No only.
+    Name-only matching is NOT used — it causes false positives for common names.
+    """
+    by_enroll = {}
+    for rec in active_records:
+        en = rec.get("enrollment_norm") or ""
+        if en and en not in by_enroll:
+            by_enroll[en] = rec
+    return by_enroll
+
+
+def find_active_match(booking_rec, by_enroll):
+    """
+    Match a booking record against active students by Enrollment No only.
+    Returns the active record or None.
+    """
+    en = normalize_enrollment(booking_rec.get("enrollment_no"))
+    if en and en in by_enroll:
+        return by_enroll[en]
+    return None
+
+
 # ============================================================
 # CORE EXTRACTION
 # ============================================================
@@ -354,35 +458,38 @@ def run_data_extraction(log_callback=None, progress_callback=None):
     if not source_files:
         raise RuntimeError("No Excel files found in source/ folder.")
 
-    log(f"[1/6] Found {len(source_files)} Excel file(s) in source/:")
+    log(f"[1/7] Found {len(source_files)} Excel file(s) in source/:")
     for p in source_files:
         log(f"       • {os.path.basename(p)}")
 
-    source_one_files, source_two_files = classify_source_files(source_files)
-    log(f"\n       Classified as Source File 1  : {len(source_one_files)}")
+    source_one_files, source_two_files, active_files = classify_source_files(source_files)
+    log(f"\n       Classified as Source File 1 (Booking) : {len(source_one_files)}")
     for p in source_one_files:
         log(f"         – {os.path.basename(p)}")
-    log(f"       Classified as Source File 2 : {len(source_two_files)}")
+    log(f"       Classified as Source File 2 (Personal): {len(source_two_files)}")
     for p in source_two_files:
+        log(f"         – {os.path.basename(p)}")
+    log(f"       Classified as Active Students         : {len(active_files)}")
+    for p in active_files:
         log(f"         – {os.path.basename(p)}")
 
     if not source_one_files:
         raise RuntimeError("No Booking Confirmation file detected in source/.")
 
-    progress(15)
+    progress(10)
 
     # 2. Load source file 1 data
-    log("\n[2/6] Loading Source File 1 data...")
+    log("\n[2/7] Loading Source File 1 data...")
     source_file_records = []
     for path in source_one_files:
         recs = load_source_one_file(path)
         log(f"       {os.path.basename(path)} → {len(recs)} records")
         source_file_records.extend(recs)
     log(f"       Total source file one records : {len(source_file_records)}")
-    progress(35)
+    progress(25)
 
     # 3. Load source file 2
-    log("\n[3/6] Loading Source File 2 data...")
+    log("\n[3/7] Loading Source File 2 data...")
     name_to_personal = defaultdict(list)
     total_personal = 0
     for path in source_two_files:
@@ -391,19 +498,32 @@ def run_data_extraction(log_callback=None, progress_callback=None):
         total_personal += cnt
     log(f"       Total source file two records : {total_personal}")
     log(f"       Unique normalized names: {len(name_to_personal)}")
-    progress(55)
+    progress(40)
 
-    # 4. Template
-    log("\n[4/6] Locating destination template...")
+    # 4. Load Active Students
+    log("\n[4/7] Loading Active Students data...")
+    active_records = []
+    for path in active_files:
+        recs = load_active_students_file(path)
+        log(f"       {os.path.basename(path)} → {len(recs)} records")
+        active_records.extend(recs)
+    by_enroll = build_active_lookup(active_records)
+    log(f"       Total active student records : {len(active_records)}")
+    log(f"       Unique enrollment keys       : {len(by_enroll)}")
+    log("       Matching mode: Enrollment No only (strict)")
+    progress(50)
+
+    # 5. Template
+    log("\n[5/7] Locating destination template...")
     template_files = list_xlsx(TEMPLATE_DIR)
     if not template_files:
         raise RuntimeError("No template Excel file found in template/ folder.")
     template_path = template_files[0]
     log(f"       Using template: {os.path.basename(template_path)}")
-    progress(60)
+    progress(55)
 
-    # 5. Match
-    log("\n[5/6] Matching and preparing output rows...")
+    # 6. Match
+    log("\n[6/7] Matching and preparing output rows...")
     log("       (Duplicate check DISABLED – every booking row will be written)")
 
     dest_columns = [
@@ -412,11 +532,13 @@ def run_data_extraction(log_callback=None, progress_callback=None):
         "Admissionnumber/ Registration No.", "Rollnumber",
         "Guardiancnic", "Mobilenumber", "Studentaddress",
         "Tuition  Fee |1", "Previous Balance",
+        "ActiveStatus",
     ]
 
     output_rows = []
     matched = 0
     unmatched = 0
+    active_matched = 0
     total = len(source_file_records) or 1
 
     for i, b in enumerate(source_file_records):
@@ -426,6 +548,16 @@ def run_data_extraction(log_callback=None, progress_callback=None):
         else:
             unmatched += 1
 
+        # Active status + Batch (Class) from Active Students file
+        active_rec = find_active_match(b, by_enroll)
+        if active_rec:
+            active_matched += 1
+            class_value = active_rec.get("batch") or ""
+            active_status = "Yes"
+        else:
+            class_value = ""
+            active_status = "No"
+
         genderid = ""
         if p and p.get("title") == "1":
             genderid = "Male"
@@ -433,7 +565,7 @@ def run_data_extraction(log_callback=None, progress_callback=None):
             genderid = "Female"
 
         output_rows.append({
-            "Class": "",
+            "Class": class_value,
             "Section": "",
             "Studentname": b["student_name_clean"],
             "Fathername": p["father_name"] if p else "",
@@ -448,16 +580,21 @@ def run_data_extraction(log_callback=None, progress_callback=None):
             "Studentaddress": p["full_address"] if p else "",
             "Tuition  Fee |1": b["monthly_fee_after_discount"],
             "Previous Balance": "",
+            "ActiveStatus": active_status,
         })
 
         if i % 200 == 0:
-            progress(60 + 25 * (i / total))
+            progress(55 + 30 * (i / total))
 
     progress(85)
-    log(f"       Rows prepared : {len(output_rows)}  (Matched: {matched}, Unmatched: {unmatched})")
+    log(f"       Rows prepared      : {len(output_rows)}")
+    log(f"       Matched personal   : {matched}")
+    log(f"       Unmatched personal : {unmatched}")
+    log(f"       Active (Yes)       : {active_matched}")
+    log(f"       Active (No)        : {len(output_rows) - active_matched}")
 
-    # 6. Write
-    log("\n[6/6] Writing result file...")
+    # 7. Write
+    log("\n[7/7] Writing result file...")
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_name = f"Client_Data_Collection_{timestamp}.xlsx"
     out_path = os.path.join(DEST_DIR, out_name)
@@ -465,14 +602,46 @@ def run_data_extraction(log_callback=None, progress_callback=None):
     wb = load_workbook(template_path)
     ws = wb.active
 
+    # Ensure header row includes ActiveStatus (append if missing)
+    header_row = 1
+    existing_headers = {}
+    for c in range(1, ws.max_column + 1):
+        h = ws.cell(header_row, c).value
+        if h:
+            existing_headers[str(h).strip()] = c
+
+    # Map dest_columns to actual column indices; create ActiveStatus col if needed
+    col_map = {}
+    next_col = ws.max_column + 1
+    for col_name in dest_columns:
+        if col_name in existing_headers:
+            col_map[col_name] = existing_headers[col_name]
+        else:
+            # try case-insensitive / partial match
+            found = None
+            for eh, idx in existing_headers.items():
+                if eh.lower() == col_name.lower() or col_name.lower() in eh.lower():
+                    found = idx
+                    break
+            if found:
+                col_map[col_name] = found
+            else:
+                col_map[col_name] = next_col
+                ws.cell(header_row, next_col).value = col_name
+                next_col += 1
+
+    max_write_col = max(col_map.values()) if col_map else len(dest_columns)
+
+    # Clear old data rows
     if ws.max_row > 1:
         for r in range(2, ws.max_row + 1):
-            for c in range(1, len(dest_columns) + 1):
+            for c in range(1, max_write_col + 1):
                 ws.cell(r, c).value = None
 
     for idx, rowdata in enumerate(output_rows):
         excel_row = idx + 2
-        for col_idx, col_name in enumerate(dest_columns, start=1):
+        for col_name in dest_columns:
+            col_idx = col_map[col_name]
             value = rowdata.get(col_name)
             ws.cell(excel_row, col_idx).value = value if value not in (None, "") else None
 
@@ -490,22 +659,32 @@ def run_data_extraction(log_callback=None, progress_callback=None):
         f.write(f"Source file Two used    : {len(source_two_files)}\n")
         for p in source_two_files:
             f.write(f"  - {os.path.basename(p)}\n")
+        f.write(f"Active Students files   : {len(active_files)}\n")
+        for p in active_files:
+            f.write(f"  - {os.path.basename(p)}\n")
         f.write(f"Total source file one records  : {len(source_file_records)}\n")
         f.write(f"Total source file two records : {total_personal}\n")
+        f.write(f"Total active student records  : {len(active_records)}\n")
         f.write(f"Rows written           : {len(output_rows)}\n")
         f.write(f"Matched with personal  : {matched}\n")
         f.write(f"Unmatched (booking only): {unmatched}\n")
+        f.write(f"ActiveStatus = Yes     : {active_matched}\n")
+        f.write(f"ActiveStatus = No      : {len(output_rows) - active_matched}\n")
         f.write(f"Output file            : {out_name}\n")
         f.write("\nNOTE: Duplicate checking is DISABLED.\n")
         f.write("      Every booking row is written even if names repeat.\n")
+        f.write("Class column is populated from Active Students → Batch.\n")
+        f.write("ActiveStatus is Yes if student found in Active Students file.\n")
 
     progress(100)
     log("\n" + "=" * 60)
     log("  DATA Extraction COMPLETED SUCCESSFULLY")
     log("=" * 60)
     log(f"  Rows written     : {len(output_rows)}")
-    log(f"  Matched          : {matched}")
+    log(f"  Matched personal : {matched}")
     log(f"  Unmatched        : {unmatched}")
+    log(f"  ActiveStatus Yes : {active_matched}")
+    log(f"  ActiveStatus No  : {len(output_rows) - active_matched}")
     log(f"  Output file      : {out_path}")
     log(f"  Log file         : {LOG_FILE}")
     log("=" * 60)
@@ -515,6 +694,7 @@ def run_data_extraction(log_callback=None, progress_callback=None):
         "rows": len(output_rows),
         "matched": matched,
         "unmatched": unmatched,
+        "active_matched": active_matched,
         "output_path": out_path,
         "output_name": out_name,
         "log_file": LOG_FILE,
@@ -524,7 +704,8 @@ def run_data_extraction(log_callback=None, progress_callback=None):
 # ============================================================
 # GUI
 # ============================================================
-class ConsolidationApp(tk.Tk):
+if HAS_TK:
+  class ConsolidationApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Data Extraction")
@@ -675,11 +856,14 @@ class ConsolidationApp(tk.Tk):
 
         source_files = list_xlsx(SOURCE_DIR)
         if source_files:
-            booking, personal = classify_source_files(source_files)
+            booking, personal, active = classify_source_files(source_files)
             for p in booking:
                 self.source_file_one_list.insert(tk.END, os.path.basename(p))
             for p in personal:
                 self.source_file_two_list.insert(tk.END, os.path.basename(p))
+            for p in active:
+                # Show active files in the personal list with a prefix so they are visible
+                self.source_file_two_list.insert(tk.END, f"[Active] {os.path.basename(p)}")
         else:
             self.source_file_one_list.insert(tk.END, "(no files – put .xlsx files in source/)")
             self.source_file_two_list.insert(tk.END, "(no files – put .xlsx files in source/)")
@@ -720,16 +904,19 @@ class ConsolidationApp(tk.Tk):
         self._running = False
         self.run_btn.configure(state=tk.NORMAL)
         self._last_output = result["output_path"]
+        active_yes = result.get("active_matched", 0)
         self.status_var.set(
-            f"Done – {result['rows']} rows written  |  Matched: {result['matched']}  |  Unmatched: {result['unmatched']}"
+            f"Done – {result['rows']} rows  |  Personal matched: {result['matched']}  |  Active Yes: {active_yes}"
         )
         self._log("\n✓  Data Extraction finished successfully.", "success")
         messagebox.showinfo(
             "Success",
             f"Data Extraction completed!\n\n"
-            f"Rows written : {result['rows']}\n"
-            f"Matched      : {result['matched']}\n"
-            f"Unmatched    : {result['unmatched']}\n\n"
+            f"Rows written      : {result['rows']}\n"
+            f"Personal matched  : {result['matched']}\n"
+            f"Personal unmatched: {result['unmatched']}\n"
+            f"ActiveStatus Yes  : {active_yes}\n"
+            f"ActiveStatus No   : {result['rows'] - active_yes}\n\n"
             f"Output:\n{result['output_name']}"
         )
 
@@ -776,15 +963,17 @@ def main():
     for d in (SOURCE_DIR, TEMPLATE_DIR, DEST_DIR):
         os.makedirs(d, exist_ok=True)
 
-    # If launched with --cli flag, keep original console behaviour
-    if "--cli" in sys.argv:
+    # If launched with --cli flag, or GUI unavailable, run console mode
+    if "--cli" in sys.argv or not HAS_TK:
         def console_log(msg):
             print(msg)
         try:
             run_data_extraction(log_callback=console_log)
         except Exception as e:
             print(f"\nERROR: {e}")
-            input("\nPress Enter to exit...")
+            traceback.print_exc()
+            if sys.stdin.isatty():
+                input("\nPress Enter to exit...")
         return
 
     app = ConsolidationApp()

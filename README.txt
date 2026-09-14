@@ -1,4 +1,6 @@
-STUDENT DATA EXTRACTION – USER GUIDE (GUI Version)
+============================================================
+  DATA EXTRACTION – USER GUIDE (GUI Version)
+============================================================
 
 FOLDER STRUCTURE
 ----------------
@@ -15,8 +17,8 @@ DataExtraction/
 ├── destination/          ← Generated result files appear here
 │   └── Client_Data_Collection_YYYYMMDD_HHMMSS.xlsx
 │
-├── data_extraction.py   ← Main program (GUI + logic)
-├── Run_Data_Extraction.bat         ← Double-click to launch GUI
+├── consolidate_student_data.py   ← Main program (GUI + logic)
+├── Run_Consolidation.bat         ← Double-click to launch GUI
 ├── requirements.txt
 └── matching_log.txt              (created after each run)
 
@@ -26,11 +28,11 @@ HOW TO USE (GUI)
 1. Place one or more Booking Confirmation report(s) into  source/
 2. Place one or more Student Personal Detail report(s) into  source/
 3. Place the Client Data Collection template into  template/
-4. Double-click  Run_Data_Extraction.bat   (or run: python consolidate_student_data.py)
+4. Double-click  Run_Consolidation.bat   (or run: python consolidate_student_data.py)
 5. The GUI window opens:
    - Click “Refresh” if you just added files
    - Check the detected Booking / Personal files lists
-   - Click “Run Data Extraction”
+   - Click “▶ Run Data Copy”
    - Watch the live log and progress bar
    - When finished, click “Open Output File” or open the destination folder
 6. The result appears in destination/ with a timestamp so nothing is overwritten
@@ -74,9 +76,21 @@ Admissionnumber/ Registration No.   Booking → Revised or Original BC Number
 Rollnumber                          Booking → Enrollment No.
 Mobilenumber                        Personal → Mobile No.
 Studentaddress                      Personal → Address 1 + Address 2
-Class / Section / Guardiancnic /
-Tuition Fee                         Booking → Monthly Fee After Discount
-Previous Balance                    left empty
+Class                               Active Students → Batch (when student is active)
+ActiveStatus                        Yes if student found in Active Students file,
+                                    No otherwise
+                                    (matched primarily by Enrollment No, then by name)
+Section / Guardiancnic /
+Tuition Fee / Previous Balance      left empty (Tuition Fee comes from Booking when present)
+
+ACTIVE STUDENTS FILE
+--------------------
+Place the Active Students Excel (e.g. "ActiveStudents August 2026.xlsx")
+into the source/ folder together with the Booking and Personal reports.
+The program auto-detects it (filename containing "active" or headers with
+Enrollment + Batch). It is used only to:
+  1. Populate the Class column with the Batch code
+  2. Set ActiveStatus = Yes / No
 
 
 REQUIREMENTS
